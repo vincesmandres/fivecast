@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Read-only research collector for Bitcoin five-minute prediction markets"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["httpx>=0.28,<0.29", "pydantic>=2.12,<3"]
+dependencies = ["httpx>=0.28,<0.29", "pydantic>=2.12,<3", "websockets>=15,<17"]
 
 [dependency-groups]
 dev = ["pytest>=8.3,<10", "ruff>=0.12,<1"]

@@ -81,6 +81,23 @@ SHADOW_TRADE_FIELDS = (
     "net_pnl",
     "roi",
 )
+HF_EVENT_FIELDS = (
+    "source_event_timestamp",
+    "local_receive_timestamp",
+    "source",
+    "market_id",
+    "token_id",
+    "sequence",
+    "event_type",
+    "price",
+    "bid",
+    "ask",
+    "size",
+    "raw_payload",
+    "duplicate",
+    "out_of_order",
+    "source_to_receive_latency_ms",
+)
 
 
 class SnapshotStore:
@@ -235,6 +252,47 @@ class SnapshotStore:
             "SELECT * FROM strategy_runs WHERE id = ?", (run_id,)
         ).fetchone()
         return None if row is None else dict(row)
+
+    def save_hf_event(self, table: str, record: Mapping[str, Any]) -> int:
+        if table not in {"btc_events", "market_events"}:
+            raise ValueError("HF event table must be btc_events or market_events")
+        values = self._research_values(record, HF_EVENT_FIELDS)
+        columns = ", ".join(HF_EVENT_FIELDS)
+        placeholders = ", ".join("?" for _ in HF_EVENT_FIELDS)
+        with self.connection:
+            return self.connection.execute(
+                f"INSERT INTO {table} ({columns}) VALUES ({placeholders})", values
+            ).lastrowid
+
+    def save_hf_connection(self, record: Mapping[str, Any]) -> int:
+        fields = (
+            "source",
+            "connected_at_utc",
+            "disconnected_at_utc",
+            "status",
+            "reconnect_attempt",
+            "error",
+        )
+        values = self._research_values(record, fields)
+        with self.connection:
+            return self.connection.execute(
+                f"INSERT INTO hf_connections ({', '.join(fields)}) "
+                f"VALUES ({', '.join('?' for _ in fields)})",
+                values,
+            ).lastrowid
+
+    def close_hf_connection(
+        self,
+        connection_id: int,
+        disconnected_at: datetime,
+        status: str = "disconnected",
+        error: str | None = None,
+    ) -> None:
+        with self.connection:
+            self.connection.execute(
+                "UPDATE hf_connections SET disconnected_at_utc=?, status=?, error=? WHERE id=?",
+                (iso(disconnected_at), status, error, connection_id),
+            )
 
     def close_elapsed_markets(self, now: datetime) -> list[str]:
         with self.connection:

@@ -459,6 +459,42 @@ representative D20/T120, D40/T90, D60/T60 and D80/T30 combinations with 0.90,
 See [M3_5_SIGNAL_AUDIT.md](docs/M3_5_SIGNAL_AUDIT.md) for actual results and the
 conclusion that the current evidence is insufficient for further strategy claims.
 
+## M4 Price Discovery
+
+M4 adds descriptive lead-lag research and a distinct public WebSocket collector.
+Neither path is imported by strategy code, evaluates holdout, ranks configurations,
+or creates execution behavior.
+
+```powershell
+uv run python -m fivecast.leadlag
+uv run python -m fivecast.hf_collect
+uv run python -m fivecast.hf_report --json
+```
+
+`leadlag` uses only the chronological research subset. Future observations are used
+only as explicitly labeled response variables in `leadlag.py`, never as strategy
+features. It studies pre-declared $5-10, $10-20, $20-30, $30-40, and $40+ five-second
+BTC movement events, with a fixed 30-second per-market cooldown. Future quote matches
+are first observations at/after +5/+10/+15/+30 seconds and no more than 7.5 seconds
+late. Correlation and event results are descriptive, not causal or actionable.
+
+`hf_collect` first discovers the active public market then uses public subscriptions
+only: Coinbase `wss://ws-feed.exchange.coinbase.com` BTC-USD ticker/match events and
+Polymarket `wss://ws-subscriptions-clob.polymarket.com/ws/market` for that market's
+UP/DOWN assets. It records append-only raw events with source and receipt times,
+prices/quotes/sizes, sequence where present, duplicate/out-of-order flags and
+connection records. At a market boundary it cleanly reconnects with the next token
+pair. No event stream is forced into a synchronized snapshot.
+
+Schema version 4 adds `btc_events`, `market_events`, and `hf_connections` plus
+timestamp/source/token indexes. SQLite WAL remains enabled. Raw payloads can grow
+quickly; the M4 smoke observed an average 631-byte raw JSON payload before SQLite
+row/index overhead. Monitor disk capacity and archive externally only through a
+separate documented data-retention process.
+
+See [M4_PRICE_DISCOVERY.md](docs/M4_PRICE_DISCOVERY.md) for the actual research
+results, sampling limitations, event rate, and storage estimate.
+
 ## Example Live Output
 
 Actual read-only observation from the successful three-snapshot smoke run:

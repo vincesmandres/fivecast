@@ -7,7 +7,7 @@ from pathlib import Path
 from fivecast.market.snapshot import measure_quality
 from fivecast.models import MarketSnapshot
 
-VERSION = 3
+VERSION = 4
 TABLES = (
     """CREATE TABLE markets (
         market_id TEXT PRIMARY KEY,
@@ -92,6 +92,66 @@ RESEARCH_TABLES = (
     )""",
 )
 
+HF_TABLES = (
+    """CREATE TABLE IF NOT EXISTS btc_events (
+        id INTEGER PRIMARY KEY,
+        source_event_timestamp TEXT,
+        local_receive_timestamp TEXT NOT NULL,
+        source TEXT NOT NULL,
+        market_id TEXT,
+        token_id TEXT,
+        sequence INTEGER,
+        event_type TEXT NOT NULL,
+        price TEXT,
+        bid TEXT,
+        ask TEXT,
+        size TEXT,
+        raw_payload TEXT NOT NULL,
+        duplicate INTEGER NOT NULL DEFAULT 0 CHECK (duplicate IN (0, 1)),
+        out_of_order INTEGER NOT NULL DEFAULT 0 CHECK (out_of_order IN (0, 1)),
+        source_to_receive_latency_ms REAL,
+        CHECK (source_event_timestamp IS NULL OR source_event_timestamp <> '')
+    )""",
+    """CREATE TABLE IF NOT EXISTS market_events (
+        id INTEGER PRIMARY KEY,
+        source_event_timestamp TEXT,
+        local_receive_timestamp TEXT NOT NULL,
+        source TEXT NOT NULL,
+        market_id TEXT,
+        token_id TEXT,
+        sequence INTEGER,
+        event_type TEXT NOT NULL,
+        price TEXT,
+        bid TEXT,
+        ask TEXT,
+        size TEXT,
+        raw_payload TEXT NOT NULL,
+        duplicate INTEGER NOT NULL DEFAULT 0 CHECK (duplicate IN (0, 1)),
+        out_of_order INTEGER NOT NULL DEFAULT 0 CHECK (out_of_order IN (0, 1)),
+        source_to_receive_latency_ms REAL
+    )""",
+    """CREATE TABLE IF NOT EXISTS hf_connections (
+        id INTEGER PRIMARY KEY,
+        source TEXT NOT NULL,
+        connected_at_utc TEXT NOT NULL,
+        disconnected_at_utc TEXT,
+        status TEXT NOT NULL CHECK (status IN ('connected', 'disconnected', 'failed')),
+        reconnect_attempt INTEGER NOT NULL DEFAULT 0,
+        error TEXT
+    )""",
+)
+
+HF_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS btc_events_timestamp ON btc_events(local_receive_timestamp)",
+    "CREATE INDEX IF NOT EXISTS btc_events_source ON btc_events(source, local_receive_timestamp)",
+    "CREATE INDEX IF NOT EXISTS market_events_timestamp ON market_events(local_receive_timestamp)",
+    "CREATE INDEX IF NOT EXISTS market_events_source_token ON market_events("
+    "source, token_id, local_receive_timestamp)",
+    "CREATE INDEX IF NOT EXISTS market_events_market_timestamp ON market_events("
+    "market_id, local_receive_timestamp)",
+    "CREATE INDEX IF NOT EXISTS hf_connections_source ON hf_connections(source, connected_at_utc)",
+)
+
 
 def iso(value: datetime) -> str:
     if value.utcoffset() is None:
@@ -134,10 +194,13 @@ def migrate(connection: sqlite3.Connection, path: Path, legacy_schema: str) -> N
         return
     if version == 2:
         migrate_v2_to_v3(connection)
+        version = 3
+    if version == 3:
+        migrate_v3_to_v4(connection)
         return
     if version != 0:
         raise ValueError(
-            f"Unsupported database schema version {version}; expected 0, 2, or {VERSION}"
+            f"Unsupported database schema version {version}; expected 0, 2, 3, or {VERSION}"
         )
     existing = connection.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'snapshots'"
@@ -193,6 +256,7 @@ def migrate(connection: sqlite3.Connection, path: Path, legacy_schema: str) -> N
         connection.execute("CREATE INDEX polls_slug ON polls(market_slug)")
         connection.execute("PRAGMA user_version = 2")
     migrate_v2_to_v3(connection)
+    migrate_v3_to_v4(connection)
 
 
 def migrate_v2_to_v3(connection: sqlite3.Connection) -> None:
@@ -201,3 +265,13 @@ def migrate_v2_to_v3(connection: sqlite3.Connection) -> None:
         for statement in RESEARCH_TABLES:
             connection.execute(statement)
         connection.execute("PRAGMA user_version = 3")
+
+
+def migrate_v3_to_v4(connection: sqlite3.Connection) -> None:
+    """Add append-only high-frequency evidence without touching prior tables."""
+    with connection:
+        for statement in HF_TABLES:
+            connection.execute(statement)
+        for statement in HF_INDEXES:
+            connection.execute(statement)
+        connection.execute("PRAGMA user_version = 4")
