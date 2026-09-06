@@ -1,10 +1,11 @@
 """SQLite snapshots with exact decimal text and idempotent identical inserts."""
 
 import sqlite3
+from collections.abc import Mapping
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import TracebackType
-from typing import Self
+from typing import Any, Self
 
 from fivecast.market.snapshot import measure_quality
 from fivecast.models import (
@@ -48,6 +49,38 @@ CREATE TABLE IF NOT EXISTS snapshots (
 );
 CREATE INDEX IF NOT EXISTS snapshots_timestamp ON snapshots(timestamp_utc);
 """
+
+STRATEGY_RUN_FIELDS = (
+    "strategy_name",
+    "strategy_version",
+    "parameters_json",
+    "created_at_utc",
+    "dataset_start_utc",
+    "dataset_end_utc",
+    "split_name",
+    "quality_filters_json",
+    "source_snapshot_count",
+    "eligible_market_count",
+    "excluded_market_count",
+)
+SHADOW_TRADE_FIELDS = (
+    "strategy_run_id",
+    "market_id",
+    "signal_timestamp_utc",
+    "side",
+    "entry_price",
+    "slippage",
+    "fees",
+    "btc_delta_usd",
+    "btc_delta_pct",
+    "seconds_remaining",
+    "spread",
+    "source_skew_ms",
+    "official_outcome",
+    "gross_pnl",
+    "net_pnl",
+    "roi",
+)
 
 
 class SnapshotStore:
@@ -167,6 +200,39 @@ class SnapshotStore:
     def get_market(self, market_id: str) -> dict | None:
         row = self.connection.execute(
             "SELECT * FROM markets WHERE market_id = ?", (market_id,)
+        ).fetchone()
+        return None if row is None else dict(row)
+
+    @staticmethod
+    def _research_values(record: Mapping[str, Any], fields: tuple[str, ...]) -> tuple[Any, ...]:
+        if set(record) != set(fields):
+            raise ValueError(f"Record fields must be exactly: {', '.join(fields)}")
+        return tuple(record[field] for field in fields)
+
+    def save_strategy_run(self, record: Mapping[str, Any]) -> int:
+        values = self._research_values(record, STRATEGY_RUN_FIELDS)
+        columns = ", ".join(STRATEGY_RUN_FIELDS)
+        placeholders = ", ".join("?" for _ in STRATEGY_RUN_FIELDS)
+        with self.connection:
+            return self.connection.execute(
+                f"INSERT INTO strategy_runs ({columns}) VALUES ({placeholders})", values
+            ).lastrowid
+
+    def save_shadow_trade(self, record: Mapping[str, Any]) -> bool:
+        values = self._research_values(record, SHADOW_TRADE_FIELDS)
+        columns = ", ".join(SHADOW_TRADE_FIELDS)
+        placeholders = ", ".join("?" for _ in SHADOW_TRADE_FIELDS)
+        with self.connection:
+            cursor = self.connection.execute(
+                f"INSERT INTO shadow_trades ({columns}) VALUES ({placeholders}) "
+                "ON CONFLICT(strategy_run_id, market_id) DO NOTHING",
+                values,
+            )
+        return cursor.rowcount == 1
+
+    def get_research_run(self, run_id: int) -> dict | None:
+        row = self.connection.execute(
+            "SELECT * FROM strategy_runs WHERE id = ?", (run_id,)
         ).fetchone()
         return None if row is None else dict(row)
 

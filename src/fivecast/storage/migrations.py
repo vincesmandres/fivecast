@@ -1,4 +1,4 @@
-"""Transactional v0 -> v2 upgrade, retaining every original snapshot and its ID."""
+"""Transactional schema upgrades, retaining every original snapshot and its ID."""
 
 import sqlite3
 from datetime import datetime
@@ -7,7 +7,7 @@ from pathlib import Path
 from fivecast.market.snapshot import measure_quality
 from fivecast.models import MarketSnapshot
 
-VERSION = 2
+VERSION = 3
 TABLES = (
     """CREATE TABLE markets (
         market_id TEXT PRIMARY KEY,
@@ -55,6 +55,43 @@ TABLES = (
     )""",
 )
 
+RESEARCH_TABLES = (
+    """CREATE TABLE strategy_runs (
+        id INTEGER PRIMARY KEY,
+        strategy_name TEXT NOT NULL,
+        strategy_version TEXT NOT NULL,
+        parameters_json TEXT NOT NULL,
+        created_at_utc TEXT NOT NULL,
+        dataset_start_utc TEXT NOT NULL,
+        dataset_end_utc TEXT NOT NULL,
+        split_name TEXT NOT NULL CHECK (split_name IN ('research', 'holdout')),
+        quality_filters_json TEXT NOT NULL,
+        source_snapshot_count INTEGER NOT NULL,
+        eligible_market_count INTEGER NOT NULL,
+        excluded_market_count INTEGER NOT NULL
+    )""",
+    """CREATE TABLE shadow_trades (
+        id INTEGER PRIMARY KEY,
+        strategy_run_id INTEGER NOT NULL REFERENCES strategy_runs(id),
+        market_id TEXT NOT NULL REFERENCES markets(market_id),
+        signal_timestamp_utc TEXT NOT NULL,
+        side TEXT NOT NULL CHECK (side IN ('BUY_UP', 'BUY_DOWN')),
+        entry_price TEXT NOT NULL,
+        slippage TEXT NOT NULL,
+        fees TEXT NOT NULL,
+        btc_delta_usd TEXT NOT NULL,
+        btc_delta_pct TEXT NOT NULL,
+        seconds_remaining REAL NOT NULL,
+        spread TEXT NOT NULL,
+        source_skew_ms REAL NOT NULL,
+        official_outcome TEXT NOT NULL CHECK (official_outcome IN ('UP', 'DOWN')),
+        gross_pnl TEXT NOT NULL,
+        net_pnl TEXT NOT NULL,
+        roi TEXT NOT NULL,
+        UNIQUE(strategy_run_id, market_id)
+    )""",
+)
+
 
 def iso(value: datetime) -> str:
     if value.utcoffset() is None:
@@ -95,8 +132,13 @@ def migrate(connection: sqlite3.Connection, path: Path, legacy_schema: str) -> N
     version = connection.execute("PRAGMA user_version").fetchone()[0]
     if version == VERSION:
         return
+    if version == 2:
+        migrate_v2_to_v3(connection)
+        return
     if version != 0:
-        raise ValueError(f"Unsupported database schema version {version}; expected 0 or {VERSION}")
+        raise ValueError(
+            f"Unsupported database schema version {version}; expected 0, 2, or {VERSION}"
+        )
     existing = connection.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'snapshots'"
     ).fetchone()
@@ -149,4 +191,13 @@ def migrate(connection: sqlite3.Connection, path: Path, legacy_schema: str) -> N
         connection.execute("CREATE INDEX snapshots_timestamp ON snapshots(timestamp_utc)")
         connection.execute("CREATE INDEX snapshots_market ON snapshots(market_id, timestamp_utc)")
         connection.execute("CREATE INDEX polls_slug ON polls(market_slug)")
-        connection.execute(f"PRAGMA user_version = {VERSION}")
+        connection.execute("PRAGMA user_version = 2")
+    migrate_v2_to_v3(connection)
+
+
+def migrate_v2_to_v3(connection: sqlite3.Connection) -> None:
+    """Add research evidence tables without rewriting any existing table."""
+    with connection:
+        for statement in RESEARCH_TABLES:
+            connection.execute(statement)
+        connection.execute("PRAGMA user_version = 3")

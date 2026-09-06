@@ -35,6 +35,9 @@ Gamma market discovery -> validated models <- CLOB UP/DOWN public books
 - `feeds/http.py`: bounded, cancellable retry/backoff for public GET requests.
 - `storage/migrations.py`: backed-up, transactional migration of existing observations.
 - `report.py`: read-only SQLite quality reports, with no internet access.
+- `replay.py`: offline, chronological replay that exposes no settlement to strategies.
+- `features.py`, `strategy.py`, `fill.py`: historical features, pure shadow decisions, and fills.
+- `experiment.py`, `holdout.py`: research-only grid ranking and explicit holdout evaluation.
 
 This is a small Python package in `src/fivecast`, not a nested project. Runtime
 dependencies are only `httpx` and `pydantic` plus their PyPI dependencies. SQLite,
@@ -337,6 +340,124 @@ excluded from cadence coverage, but are included in sample/skew counts and any
 available within-market legacy gaps. The report names rows without `run_id`
 `legacy_snapshot_count`; this also covers standalone M0/M1 observer runs outside
 `collect` mode. Unknown stale flags are reported separately, not assumed fresh.
+
+## M3 Replay Lab
+
+M3 is strictly local and offline. It opens SQLite using a read-only URI and never
+imports HTTP feed code. It replays only markets that have a persisted official
+`UP`/`DOWN` settlement and at least one valid snapshot, ordered strictly by
+`timestamp_utc`. A strategy receives the current snapshot, an immutable tuple of
+snapshots up to that timestamp, derived features, and its parameters. The official
+outcome is absent from `StrategyContext`; it is supplied only after that market's
+decision loop finishes for shadow settlement accounting. No future snapshots,
+interpolation, current-market outcome, or later BTC value is exposed.
+
+Inspect eligibility without writing anything:
+
+```powershell
+uv run python -m fivecast.replay
+uv run python -m fivecast.replay --min-coverage-pct 90 --max-skew-ms 5000
+uv run python -m fivecast.replay --allow-stale
+```
+
+Quality filters reject whole markets rather than silently dropping observations:
+`min_coverage_pct` requires known collection-run coverage, `max_skew_ms` rejects a
+market containing any larger stored skew, and stale data is rejected by default
+including legacy `NULL` stale classifications. Corrupt stored timestamps, invalid
+snapshot models, and identity mismatches also reject the entire market.
+
+Features are computed only from the replay prefix ending at the current snapshot:
+
+- `btc_delta_usd`, `btc_delta_pct`, `seconds_remaining`, UP/DOWN bid/ask/spread,
+  `source_skew_ms`, and `is_stale` come from that validated snapshot.
+- `btc_velocity_15s` and `btc_velocity_30s` equal current BTC price minus the most
+  recent recorded price at or before the respective trailing cutoff. Missing prior
+  samples produce `None`; no interpolation is used.
+- `btc_volatility_30s` and `btc_volatility_60s` are population standard deviations
+  of recorded `btc_delta_pct` values in the inclusive trailing timestamp window.
+  They are `None` only for an empty window and zero for a one-sample window.
+
+`LateMomentumStrategy` is a pure baseline. It permits at most one shadow action per
+market: `BUY_UP` when `btc_delta_usd >= delta_threshold_usd`, or `BUY_DOWN` when it
+is at most the negative threshold, subject to `seconds_remaining <=
+max_seconds_remaining`, selected ask `<= max_entry_price`, selected spread `<=
+max_spread`, source skew `<= max_skew_ms`, and exactly `is_stale == false`.
+Defaults: 80 USD, 60 seconds, 0.85, 0.05, and 5,000 ms.
+
+Shadow fills are accounting only, never instructions sent to any venue. `BUY_UP`
+uses `up_ask`; `BUY_DOWN` uses `down_ask`, never a midpoint. Entry price is
+`ask * (1 + slippage_bps / 10000)`, fees are `entry * fee_bps / 10000`, and the
+binary payout is 1 for the official winning outcome otherwise 0. `gross_pnl =
+payout - entry`, `net_pnl = gross_pnl - fees`, and `roi = net_pnl / (entry + fees)`.
+Defaults are zero slippage and fees. A slippage-adjusted price above 1 is rejected.
+
+Run the fixed 100-configuration research grid:
+
+```powershell
+uv run python -m fivecast.experiment --top 10
+```
+
+The grid is exactly the Cartesian product of threshold `40,60,80,100,120`, maximum
+remaining seconds `120,90,60,30`, and maximum entry price
+`0.70,0.75,0.80,0.85,0.90`. It uses sensible fixed defaults for spread and skew.
+Eligible markets are sorted by market start; the earliest `floor(0.7*N)` form the
+research split and the rest form holdout. Grid evaluation, persistence, and ranking
+use only research markets. Tie breaks are deterministic. Metrics include market and
+trade counts, wins/losses, win rate, average entry, gross/net PnL, ROI, EV per
+trade, maximum drawdown, profit factor, and `naive_edge = win_rate - average_entry_price`.
+`naive_edge` is a simple diagnostic, not a pricing model.
+
+The experiment creates M3-only outputs without altering raw evidence:
+
+- `strategy_runs`: strategy identity/version, canonical parameter JSON, quality
+  selection, split name, input counts, and dataset bounds.
+- `shadow_trades`: one simulated action per `(strategy_run_id, market_id)` with
+  signal-time features, asks/slippage/fees, official outcome, and accounting.
+
+Schema version 3 creates these additive tables. `snapshots`, `markets`, `polls`, and
+`collection_runs` remain immutable from the replay/experiment path.
+
+Holdout evaluation is deliberately a separate, explicit command and never runs as
+part of the grid:
+
+```powershell
+uv run python -m fivecast.holdout --strategy-run 1
+```
+
+It accepts only a persisted research `LateMomentumStrategy` run, evaluates the
+chronological holdout once, and labels its output explicitly. It must not be used to
+rank or select configurations. See [M3_REPLAY_REPORT.md](docs/M3_REPLAY_REPORT.md)
+for actual local results and sample-size limitations.
+
+## M3.5 Signal Audit
+
+M3.5 is a diagnostic-only, local SQLite audit of why the baseline produces few
+actions. It does not evaluate settlement, calculate PnL, create strategy runs, or
+rank configurations. It loads the approved default replay selection, determines the
+chronological 70% research boundary, and analyzes only that first subset. The
+remaining holdout replay objects are not passed to audit calculations.
+
+```powershell
+uv run python -m fivecast.audit
+uv run python -m fivecast.audit --export data/m3_5_audit.csv
+```
+
+The optional export is a derived CSV of earliest threshold/time-bucket crossings,
+not raw collection data. It is git-ignored under `data/`. The audit reports each
+market at most once per absolute-delta threshold/time combination. It selects the
+first stored observation satisfying `abs(btc_delta_usd) >= threshold` and
+`seconds_remaining <= bucket`; it never substitutes a later quote. Positive deltas
+select the UP quote; negative deltas select DOWN.
+
+Price buckets are cumulative (`<= 0.60`, `<= 0.70`, through `<= 0.95`, plus
+`> 0.95`). Blocker counts cover all 100 approved baseline parameter configurations
+across research markets, classified in this order: absent delta, timing, quote,
+entry price, spread, skew, stale. The counterfactual funnels use the fixed
+representative D20/T120, D40/T90, D60/T60 and D80/T30 combinations with 0.90,
+0.05 and 5,000 ms diagnostic limits. These are not an optimization exercise.
+
+See [M3_5_SIGNAL_AUDIT.md](docs/M3_5_SIGNAL_AUDIT.md) for actual results and the
+conclusion that the current evidence is insufficient for further strategy claims.
 
 ## Example Live Output
 

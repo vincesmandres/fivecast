@@ -41,7 +41,7 @@ def test_v0_migration_preserves_rows_ids_decimals_and_unknown_metrics(tmp_path, 
         assert market["metadata_source"] == "snapshot_backfill"
         assert market["condition_id"] is None
         assert market["resolved"] == 0
-        assert store.connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert store.connection.execute("PRAGMA user_version").fetchone()[0] == 3
         assert store.connection.execute("PRAGMA foreign_key_check").fetchall() == []
     assert path.with_name("legacy.db.v0.bak").exists()
     with SnapshotStore(path) as reopened:
