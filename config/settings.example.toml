@@ -1,0 +1,10 @@
+db_path = "data/fivecast.db"
+interval_seconds = 5
+request_timeout_seconds = 10
+max_quote_age_seconds = 30
+max_quote_skew_seconds = 10
+retry_attempts = 3
+retry_backoff_seconds = 1
+retry_max_backoff_seconds = 30
+settlement_poll_interval_seconds = 30
+log_level = "INFO"
