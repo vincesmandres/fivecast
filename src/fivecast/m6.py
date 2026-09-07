@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import os
 import threading
 import time
 from collections.abc import Sequence
@@ -16,6 +17,10 @@ from fivecast.forward import FrozenPolicy, attach_known_settlements, predict_onc
 from fivecast.model import FEATURE_NAMES, LogisticConfig, _fingerprint
 from fivecast.storage.migrations import iso
 from fivecast.storage.sqlite import SnapshotStore
+
+
+def _default_db_path() -> Path:
+    return Path(os.environ.get("FIVECAST_DB_PATH", "data/fivecast.db"))
 
 
 def manifest(model: dict, started: datetime) -> dict:
@@ -142,7 +147,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     report.add_argument("--detailed", action="store_true")
     settle = commands.add_parser("settle")
     for command in (begin, collect, status, report, settle):
-        command.add_argument("--db-path", type=Path, default=Path("data/fivecast.db"))
+        command.add_argument("--db-path", type=Path, default=_default_db_path())
     args = parser.parse_args(argv)
     if args.command == "start":
         print(f"experiment_id={start(args.db_path, args.model_version, args.experiment_id)}")

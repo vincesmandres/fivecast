@@ -151,6 +151,10 @@ class SnapshotStore:
         self.connection = sqlite3.connect(path)
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys = ON")
+        # One container has concurrent collector, settlement, and M6 writers.
+        # WAL plus this bounded wait avoids transient lock failures without claiming
+        # any multi-host SQLite coordination.
+        self.connection.execute("PRAGMA busy_timeout = 5000")
         try:
             migrate(self.connection, path, SCHEMA)
             self.connection.execute("PRAGMA journal_mode = WAL")

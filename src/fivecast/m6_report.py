@@ -3,6 +3,7 @@
 import argparse
 import json
 import math
+import os
 import random
 import sqlite3
 from collections import defaultdict
@@ -602,7 +603,9 @@ def format_report(value: dict, detailed: bool = False) -> str:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Read-only M6 forward validation report")
     parser.add_argument("--experiment", required=True, type=int)
-    parser.add_argument("--db-path", type=Path, default=Path("data/fivecast.db"))
+    parser.add_argument(
+        "--db-path", type=Path, default=Path(os.environ.get("FIVECAST_DB_PATH", "data/fivecast.db"))
+    )
     parser.add_argument("--detailed", action="store_true")
     args = parser.parse_args(argv)
     print(json.dumps(report(args.db_path, args.experiment, args.detailed), indent=2, default=str))

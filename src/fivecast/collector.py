@@ -84,7 +84,12 @@ class Collector:
         self.failed = 0
         self.interrupted = 0
 
-    def run(self, iterations: int | None = None, duration: float | None = None) -> None:
+    def run(
+        self,
+        iterations: int | None = None,
+        duration: float | None = None,
+        stop: threading.Event | None = None,
+    ) -> None:
         started = utc_now()
         monotonic_start = time.monotonic()
         run_id = self.store.start_run(started, self.settings.interval_seconds)
@@ -92,7 +97,9 @@ class Collector:
         self.observer.verbose = False
         slot = 0
         try:
-            while iterations is None or self.attempts < iterations:
+            while not (stop is not None and stop.is_set()) and (
+                iterations is None or self.attempts < iterations
+            ):
                 if duration is not None and time.monotonic() - monotonic_start >= duration:
                     break
                 if self.worker is not None and not self.worker.is_alive():
@@ -151,7 +158,10 @@ class Collector:
                 wait = max(0, slot * self.settings.interval_seconds - elapsed)
                 if duration is not None:
                     wait = min(wait, max(0, duration - elapsed))
-                time.sleep(wait)
+                if stop is None:
+                    time.sleep(wait)
+                else:
+                    stop.wait(wait)
         finally:
             end = utc_now()
             if duration is not None:
@@ -170,9 +180,12 @@ class Collector:
 
 
 def collect(
-    settings: Settings, iterations: int | None = None, duration: float | None = None
+    settings: Settings,
+    iterations: int | None = None,
+    duration: float | None = None,
+    stop: threading.Event | None = None,
 ) -> None:
-    stop = threading.Event()
+    stop = stop or threading.Event()
     with (
         SnapshotStore(settings.db_path) as store,
         RetryingClient(settings, stop) as client,
@@ -180,7 +193,7 @@ def collect(
         worker = SettlementWorker(settings, stop)
         worker.start()
         try:
-            Collector(Observer(client, store, settings), worker).run(iterations, duration)
+            Collector(Observer(client, store, settings), worker).run(iterations, duration, stop)
         except KeyboardInterrupt:
             logger.info("Shutdown requested; finishing database work and closing clients")
         finally:
