@@ -42,9 +42,9 @@ def trade_record(run_id: int, market_id: str) -> dict:
     }
 
 
-def test_empty_database_is_v4_with_research_and_hf_tables(tmp_path):
+def test_empty_database_is_v6_with_research_hf_forward_and_manifest_tables(tmp_path):
     with SnapshotStore(tmp_path / "research.db") as store:
-        assert store.connection.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert store.connection.execute("PRAGMA user_version").fetchone()[0] == 6
         for table in ("strategy_runs", "shadow_trades"):
             assert (
                 store.connection.execute(
@@ -65,7 +65,7 @@ def test_v2_upgrade_is_additive_and_preserves_snapshot_rows(tmp_path, snapshot):
         store.connection.execute("PRAGMA user_version = 2")
 
     with SnapshotStore(path) as store:
-        assert store.connection.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert store.connection.execute("PRAGMA user_version").fetchone()[0] == 6
         assert store.count_snapshots() == before_count
         assert tuple(store.connection.execute("SELECT * FROM snapshots").fetchone()) == before
         assert store.connection.execute("PRAGMA foreign_key_check").fetchall() == []

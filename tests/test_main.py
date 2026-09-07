@@ -186,8 +186,8 @@ def test_continuous_loop_logs_transient_absence_then_resumes(tmp_path, monkeypat
         assert store.count_snapshots() == 0
 
 
-@pytest.mark.parametrize("lead", [0.2, 2])
-def test_source_clock_lead_waits_only_within_one_second(tmp_path, inputs, monkeypatch, lead):
+@pytest.mark.parametrize("lead", [0.2, 1.5, 3])
+def test_source_clock_lead_waits_only_within_two_seconds(tmp_path, inputs, monkeypatch, lead):
     from fivecast.market.snapshot import SnapshotUnavailable
 
     source_time = inputs["timestamp"] + timedelta(seconds=lead)
@@ -210,7 +210,7 @@ def test_source_clock_lead_waits_only_within_one_second(tmp_path, inputs, monkey
         monkeypatch.setattr(observer.polymarket, "get_quote", lambda _, side: inputs[side.lower()])
         monkeypatch.setattr("fivecast.main.utc_now", lambda: current_time)
         monkeypatch.setattr("fivecast.main.time.sleep", advance)
-        if lead <= 1:
+        if lead <= 2:
             result = observer.observe()
             assert result.timestamp_utc == source_time
             assert waits == [lead]

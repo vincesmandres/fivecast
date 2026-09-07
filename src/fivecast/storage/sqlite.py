@@ -98,6 +98,51 @@ HF_EVENT_FIELDS = (
     "out_of_order",
     "source_to_receive_latency_ms",
 )
+MODEL_VERSION_FIELDS = (
+    "version",
+    "artifact_json",
+    "fingerprint",
+    "dataset_fingerprint",
+    "training_cutoff_utc",
+    "created_at_utc",
+)
+FORWARD_PREDICTION_FIELDS = (
+    "model_version_id",
+    "market_id",
+    "timestamp_utc",
+    "features_json",
+    "features_fingerprint",
+    "predicted_up_probability",
+    "up_ask",
+    "down_ask",
+    "selected_side",
+    "selected_ask",
+    "raw_edge",
+    "estimated_fees",
+    "estimated_slippage",
+    "estimated_latency",
+    "net_edge",
+    "eligible",
+    "rejection_reason",
+    "official_outcome",
+    "paper_pnl",
+    "created_at_utc",
+)
+FORWARD_PAPER_TRADE_FIELDS = (
+    "prediction_id",
+    "model_version_id",
+    "market_id",
+    "timestamp_utc",
+    "side",
+    "entry_price",
+    "gross_pnl",
+    "estimated_fees",
+    "estimated_slippage",
+    "estimated_latency",
+    "net_pnl",
+    "official_outcome",
+    "created_at_utc",
+)
 
 
 class SnapshotStore:
@@ -278,6 +323,133 @@ class SnapshotStore:
             return self.connection.execute(
                 f"INSERT INTO hf_connections ({', '.join(fields)}) "
                 f"VALUES ({', '.join('?' for _ in fields)})",
+                values,
+            ).lastrowid
+
+    def persist_model_version(self, record: Mapping[str, Any]) -> int:
+        values = self._research_values(record, MODEL_VERSION_FIELDS)
+        columns = ", ".join(MODEL_VERSION_FIELDS)
+        with self.connection:
+            return self.connection.execute(
+                f"INSERT INTO model_versions ({columns}) VALUES ({', '.join('?' for _ in values)})",
+                values,
+            ).lastrowid
+
+    def get_model_version(self, identifier: int | str) -> dict | None:
+        row = self.connection.execute(
+            "SELECT * FROM model_versions WHERE id = ? OR version = ? OR fingerprint = ? "
+            "ORDER BY id LIMIT 1",
+            (identifier, str(identifier), str(identifier)),
+        ).fetchone()
+        return None if row is None else dict(row)
+
+    def save_m6_experiment(self, record: Mapping[str, Any]) -> int:
+        fields = (
+            "experiment_id",
+            "model_version_id",
+            "experiment_start_utc",
+            "manifest_json",
+            "manifest_hash",
+            "status",
+            "created_at_utc",
+        )
+        values = self._research_values(record, fields)
+        with self.connection:
+            cursor = self.connection.execute(
+                f"INSERT INTO m6_experiments ({', '.join(fields)}) "
+                f"VALUES ({', '.join('?' for _ in fields)}) "
+                "ON CONFLICT(experiment_id) DO NOTHING",
+                values,
+            )
+            if cursor.rowcount == 1:
+                return cursor.lastrowid
+            row = self.connection.execute(
+                "SELECT id, manifest_hash FROM m6_experiments WHERE experiment_id=?",
+                (record["experiment_id"],),
+            ).fetchone()
+            if row["manifest_hash"] != record["manifest_hash"]:
+                raise ValueError("Existing M6 experiment manifest is immutable")
+            return row["id"]
+
+    def get_m6_experiment(self, identifier: int | str) -> dict | None:
+        row = self.connection.execute(
+            "SELECT * FROM m6_experiments WHERE id=? OR experiment_id=? ORDER BY id LIMIT 1",
+            (identifier, str(identifier)),
+        ).fetchone()
+        return None if row is None else dict(row)
+
+    def link_m6_prediction(
+        self, experiment_id: int, prediction_id: int, linked_at: datetime
+    ) -> bool:
+        with self.connection:
+            return (
+                self.connection.execute(
+                    "INSERT INTO m6_prediction_links "
+                    "(experiment_id, prediction_id, linked_at_utc) VALUES (?, ?, ?) "
+                    "ON CONFLICT(experiment_id, prediction_id) DO NOTHING",
+                    (experiment_id, prediction_id, iso(linked_at)),
+                ).rowcount
+                == 1
+            )
+
+    def save_forward_prediction(self, record: Mapping[str, Any]) -> int:
+        values = self._research_values(record, FORWARD_PREDICTION_FIELDS)
+        columns = ", ".join(FORWARD_PREDICTION_FIELDS)
+        with self.connection:
+            return (
+                self.connection.execute(
+                    f"INSERT INTO forward_predictions ({columns}) "
+                    f"VALUES ({', '.join('?' for _ in values)}) "
+                    "ON CONFLICT(model_version_id, market_id, timestamp_utc) DO NOTHING",
+                    values,
+                ).lastrowid
+                or self.connection.execute(
+                    "SELECT id FROM forward_predictions WHERE model_version_id=? AND market_id=? "
+                    "AND timestamp_utc=?",
+                    (record["model_version_id"], record["market_id"], record["timestamp_utc"]),
+                ).fetchone()[0]
+            )
+
+    def attach_forward_settlement(
+        self,
+        market_id: str | MarketResolution | Mapping[str, Any],
+        outcome: str | None = None,
+        paper_pnl: str | None = None,
+    ) -> int:
+        if isinstance(market_id, MarketResolution):
+            resolution = market_id
+            market_id, outcome = resolution.market_id, resolution.outcome
+        elif isinstance(market_id, Mapping):
+            result = market_id
+            market_id, outcome = result["market_id"], result["outcome"]
+            paper_pnl = result.get("paper_pnl", paper_pnl)
+        if outcome is None:
+            raise ValueError("Forward settlement outcome is required")
+        if outcome not in {"UP", "DOWN"}:
+            raise ValueError("Forward settlement outcome must be UP or DOWN")
+        with self.connection:
+            cursor = self.connection.execute(
+                "UPDATE forward_predictions SET official_outcome=?, "
+                "paper_pnl=COALESCE(?, paper_pnl) "
+                "WHERE market_id=? AND official_outcome IS NULL",
+                (outcome, paper_pnl, market_id),
+            )
+            self.connection.execute(
+                "UPDATE forward_paper_trades SET official_outcome=?, "
+                "net_pnl=COALESCE(?, net_pnl) "
+                "WHERE market_id=? AND official_outcome IS NULL",
+                (outcome, paper_pnl, market_id),
+            )
+        return cursor.rowcount
+
+    def save_forward_paper_trade(self, record: Mapping[str, Any]) -> int:
+        values = self._research_values(record, FORWARD_PAPER_TRADE_FIELDS)
+        columns = ", ".join(FORWARD_PAPER_TRADE_FIELDS)
+        with self.connection:
+            return self.connection.execute(
+                f"INSERT INTO forward_paper_trades ({columns}) "
+                f"VALUES ({', '.join('?' for _ in values)}) "
+                "ON CONFLICT(model_version_id, market_id) DO NOTHING",
                 values,
             ).lastrowid
 

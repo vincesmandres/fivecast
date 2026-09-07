@@ -495,6 +495,46 @@ separate documented data-retention process.
 See [M4_PRICE_DISCOVERY.md](docs/M4_PRICE_DISCOVERY.md) for the actual research
 results, sampling limitations, event rate, and storage estimate.
 
+## M5 Fair Value Freeze
+
+M5 freezes one interpretable probability artifact before forward records. It uses
+one point-in-time anchor per market and chronological market-level train/validation
+splits, preserving the prior M3 holdout. The logistic model and market executable-ask
+baseline are compared with Brier/log loss first; AUC/accuracy are secondary. The
+artifact has no automatic retraining path.
+
+```powershell
+uv run python -m fivecast.train
+uv run python -m fivecast.forward --model-version 1 --once
+uv run python -m fivecast.forward --model-version 1 --interval 5
+uv run python -m fivecast.forward_report
+```
+
+Forward records use only snapshots newer than the artifact cutoff and reject earlier
+timestamps. For each side, edge is model probability minus that side's ask, not a
+midpoint. Frozen estimated costs are subtracted before eligibility. At most one
+isolated paper research record is retained per model/market; no order is sent. See
+[M5_PREREGISTRATION.md](docs/M5_PREREGISTRATION.md) and
+[M5_FAIR_VALUE.md](docs/M5_FAIR_VALUE.md) for the exact freeze, coefficients,
+validation result, policy, and kill criteria.
+
+## M6 Forward Validation
+
+M6 is the prospective wrapper around the frozen M5 artifact. It creates an immutable
+manifest and only links predictions with timestamps strictly after both artifact cutoff and
+manifest start. Prior M5 predictions and the M3 holdout are excluded.
+
+```powershell
+uv run python -m fivecast.m6 start --model-version 1 --experiment-id m6-20260906-001
+uv run python -m fivecast.main collect
+uv run python -m fivecast.m6 collect --experiment 1 --interval 5
+uv run python -m fivecast.m6_report --experiment 1 --detailed
+```
+
+M6 records remain paper-only research. The report is `INCONCLUSIVE` until the unchanged
+M5 minimum 200 resolved independent markets and 50 eligible records are reached. See
+[M6_FORWARD_VALIDATION.md](docs/M6_FORWARD_VALIDATION.md).
+
 ## Example Live Output
 
 Actual read-only observation from the successful three-snapshot smoke run:

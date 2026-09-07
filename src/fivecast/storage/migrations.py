@@ -7,7 +7,7 @@ from pathlib import Path
 from fivecast.market.snapshot import measure_quality
 from fivecast.models import MarketSnapshot
 
-VERSION = 4
+VERSION = 6
 TABLES = (
     """CREATE TABLE markets (
         market_id TEXT PRIMARY KEY,
@@ -152,6 +152,78 @@ HF_INDEXES = (
     "CREATE INDEX IF NOT EXISTS hf_connections_source ON hf_connections(source, connected_at_utc)",
 )
 
+FORWARD_TABLES = (
+    """CREATE TABLE IF NOT EXISTS model_versions (
+        id INTEGER PRIMARY KEY,
+        version TEXT NOT NULL UNIQUE,
+        artifact_json TEXT NOT NULL,
+        fingerprint TEXT NOT NULL UNIQUE,
+        dataset_fingerprint TEXT NOT NULL,
+        training_cutoff_utc TEXT NOT NULL,
+        created_at_utc TEXT NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS forward_predictions (
+        id INTEGER PRIMARY KEY,
+        model_version_id INTEGER NOT NULL REFERENCES model_versions(id),
+        market_id TEXT NOT NULL REFERENCES markets(market_id),
+        timestamp_utc TEXT NOT NULL,
+        features_json TEXT NOT NULL,
+        features_fingerprint TEXT NOT NULL,
+        predicted_up_probability TEXT NOT NULL,
+        up_ask TEXT,
+        down_ask TEXT,
+        selected_side TEXT,
+        selected_ask TEXT,
+        raw_edge TEXT,
+        estimated_fees TEXT,
+        estimated_slippage TEXT,
+        estimated_latency TEXT,
+        net_edge TEXT,
+        eligible INTEGER NOT NULL CHECK (eligible IN (0, 1)),
+        rejection_reason TEXT,
+        official_outcome TEXT CHECK (official_outcome IN ('UP', 'DOWN')),
+        paper_pnl TEXT,
+        created_at_utc TEXT NOT NULL,
+        UNIQUE(model_version_id, market_id, timestamp_utc)
+    )""",
+    """CREATE TABLE IF NOT EXISTS forward_paper_trades (
+        id INTEGER PRIMARY KEY,
+        prediction_id INTEGER NOT NULL UNIQUE REFERENCES forward_predictions(id),
+        model_version_id INTEGER NOT NULL REFERENCES model_versions(id),
+        market_id TEXT NOT NULL REFERENCES markets(market_id),
+        timestamp_utc TEXT NOT NULL,
+        side TEXT NOT NULL,
+        entry_price TEXT NOT NULL,
+        gross_pnl TEXT,
+        estimated_fees TEXT,
+        estimated_slippage TEXT,
+        estimated_latency TEXT,
+        net_pnl TEXT,
+        official_outcome TEXT CHECK (official_outcome IN ('UP', 'DOWN')),
+        created_at_utc TEXT NOT NULL,
+        UNIQUE(model_version_id, market_id)
+    )""",
+)
+
+M6_TABLES = (
+    """CREATE TABLE IF NOT EXISTS m6_experiments (
+        id INTEGER PRIMARY KEY,
+        experiment_id TEXT NOT NULL UNIQUE,
+        model_version_id INTEGER NOT NULL REFERENCES model_versions(id),
+        experiment_start_utc TEXT NOT NULL,
+        manifest_json TEXT NOT NULL,
+        manifest_hash TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL CHECK (status IN ('active', 'complete')),
+        created_at_utc TEXT NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS m6_prediction_links (
+        experiment_id INTEGER NOT NULL REFERENCES m6_experiments(id),
+        prediction_id INTEGER NOT NULL REFERENCES forward_predictions(id),
+        linked_at_utc TEXT NOT NULL,
+        PRIMARY KEY (experiment_id, prediction_id)
+    )""",
+)
+
 
 def iso(value: datetime) -> str:
     if value.utcoffset() is None:
@@ -197,10 +269,16 @@ def migrate(connection: sqlite3.Connection, path: Path, legacy_schema: str) -> N
         version = 3
     if version == 3:
         migrate_v3_to_v4(connection)
+        version = 4
+    if version == 4:
+        migrate_v4_to_v5(connection)
+        version = 5
+    if version == 5:
+        migrate_v5_to_v6(connection)
         return
     if version != 0:
         raise ValueError(
-            f"Unsupported database schema version {version}; expected 0, 2, 3, or {VERSION}"
+            f"Unsupported database schema version {version}; expected 0 through {VERSION}"
         )
     existing = connection.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'snapshots'"
@@ -257,6 +335,8 @@ def migrate(connection: sqlite3.Connection, path: Path, legacy_schema: str) -> N
         connection.execute("PRAGMA user_version = 2")
     migrate_v2_to_v3(connection)
     migrate_v3_to_v4(connection)
+    migrate_v4_to_v5(connection)
+    migrate_v5_to_v6(connection)
 
 
 def migrate_v2_to_v3(connection: sqlite3.Connection) -> None:
@@ -275,3 +355,17 @@ def migrate_v3_to_v4(connection: sqlite3.Connection) -> None:
         for statement in HF_INDEXES:
             connection.execute(statement)
         connection.execute("PRAGMA user_version = 4")
+
+
+def migrate_v4_to_v5(connection: sqlite3.Connection) -> None:
+    with connection:
+        for statement in FORWARD_TABLES:
+            connection.execute(statement)
+        connection.execute("PRAGMA user_version = 5")
+
+
+def migrate_v5_to_v6(connection: sqlite3.Connection) -> None:
+    with connection:
+        for statement in M6_TABLES:
+            connection.execute(statement)
+        connection.execute("PRAGMA user_version = 6")

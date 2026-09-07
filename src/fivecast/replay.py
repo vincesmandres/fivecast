@@ -92,9 +92,9 @@ class ReplayStore:
             connection.row_factory = sqlite3.Row
             connection.execute("PRAGMA query_only=ON")
             version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version not in {2, 3, 4}:
+            if version not in {2, 3, 4, 5, 6}:
                 raise RuntimeError(
-                    f"Unsupported database schema version {version}; expected 2, 3, or 4"
+                    f"Unsupported database schema version {version}; expected 2 through 6"
                 )
             return connection
         except sqlite3.Error as exc:

@@ -16,6 +16,7 @@ from fivecast.models import MarketSnapshot, PredictionMarket, WindowOpen, utc_no
 from fivecast.storage.sqlite import SnapshotStore
 
 logger = logging.getLogger("fivecast")
+MAX_SOURCE_CLOCK_LEAD_SECONDS = 2
 
 
 def configure_logging(level: str) -> None:
@@ -78,7 +79,7 @@ class Observer:
         ).total_seconds()
         # Public server clocks can lead the host by milliseconds. Wait, rather than
         # backdating inputs or admitting future observations into a snapshot.
-        if 0 < lead <= 1:
+        if 0 < lead <= MAX_SOURCE_CLOCK_LEAD_SECONDS:
             logger.debug("Waiting %.3fs for a small source clock lead", lead)
             time.sleep(lead)
             timestamp = utc_now()
